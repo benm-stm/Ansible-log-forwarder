@@ -1,0 +1,113 @@
+---
+
+#- name: Copy from '{{ inventory_hostname }}' to '{{ dest_server.ip }}'
+#  synchronize:
+#    src: "{{ plateform_dir }}/{{ item }}"
+#    dest: "{{ plateform_dir }}/raf"
+#    mode: pull
+#  with_items: "{{ logs }}"
+#*  delegate_to: "{{ dest_server.ip }}"
+
+- name: check for old logs
+  stat: path={{ filebeat_logs_dir }}
+  register: logs_exist
+  run_once: true
+  delegate_to: localhost
+
+- name: Clean old logs
+  shell: /bin/rm -rf {{ filebeat_logs_dir }}/*
+  when: logs_exist.stat.exists
+  run_once: true
+  delegate_to: localhost
+
+- name: Creates logs directory
+  file:
+    path: "{{ filebeat_logs_dir }}"
+    state: directory
+    mode: 0775
+  run_once: true
+  delegate_to: localhost
+
+########################################################
+#A date is given and it's today
+########################################################
+#get local date
+- name: compare local with given date
+  shell: "echo $(( {{ lookup('pipe','date +%Y%m%d') }} - {{ custom_date }} ))"
+  register: date_difference
+  when: custom_date != ''
+
+#create tmp archives dir
+- name: Create logs directory under tmp
+  file:
+    path: "/tmp/log_archives"
+    state: directory
+    mode: 0775
+  when: custom_date != '' and date_difference.stdout == "0"
+
+# in case the compressed file does not exist
+#Compress current date log
+- name: compress current date log
+  shell: cd {{ plateform_dir }} && bzip2 -c {{ item }} > /tmp/log_archives/{{ item | basename }}-{{ custom_date }}.bz2 
+  ignore_errors: yes
+  with_items: "{{ logs }}"
+  when: custom_date != '' and date_difference.stdout == "0"
+
+#copy from tmp
+- name: Copy from remote to localhost today's logs
+  fetch:
+    src: "/tmp/log_archives/{{ item | basename }}-{{ custom_date }}.bz2"
+    dest: "{{ filebeat_logs_dir }}/{{ inventory_hostname }}-{{ lookup('pipe', 'echo {{ item }} | rev | cut -d/ -f1 | rev') }}-{{ custom_date }}.bz2"
+    fail_on_missing: no
+    flat: yes
+  with_items: "{{ logs }}"
+  when: custom_date != '' and date_difference.stdout == "0"
+
+#Delete temporary compression from /tmp
+- name: Clean temporary compressions folder
+  shell: /bin/rm -rf /tmp/log_archives
+  when: custom_date != '' and date_difference.stdout == "0"
+
+#########################################################
+
+########################################################
+#A date is given and it's not today
+########################################################
+- name: Copy from remote to localhost {{ custom_date }} logs
+  fetch:
+    src: "{{ plateform_dir }}/{{ item }}-{{ custom_date }}.bz2"
+    dest: "{{ filebeat_logs_dir }}/{{ inventory_hostname }}-{{ lookup('pipe', 'echo {{ item }} | rev | cut -d/ -f1 | rev') }}-{{ custom_date }}.bz2"
+    fail_on_missing: no
+    flat: yes
+  with_items: "{{ logs }}"
+  when: custom_date != '' and date_difference.stdout != '0'
+########################################################
+
+########################################################
+#A date is not given so we take yesterday
+########################################################
+- name: Copy from remote to localhost yesterday's logs
+  fetch:
+    src: "{{ plateform_dir }}/{{ item }}-{{ lookup('pipe', 'date --date=\"-1 day\" +%Y%m%d') }}.bz2"
+    dest: "{{ filebeat_logs_dir }}/{{ inventory_hostname }}-{{ lookup('pipe', 'echo {{ item }} | rev | cut -d/ -f1 | rev') }}-{{ lookup('pipe', 'date --date=\"-1 day\" +%Y%m%d') }}.bz2"
+    fail_on_missing: no
+    flat: yes
+  with_items: "{{ logs }}"
+  when: custom_date == ''
+########################################################
+
+- command: "ls {{ filebeat_logs_dir }}"
+  run_once: true
+  register: archives_list
+  delegate_to: localhost
+
+- debug: var={{item}}
+  with_items: archives_list.stdout_lines
+  run_once: true
+  delegate_to: localhost
+
+- name: Extract archive and inject them to filebeat
+  shell: cd {{ filebeat_logs_dir }} && bzip2 -d {{ item }}
+  with_items: archives_list.stdout_lines
+  run_once: true
+  delegate_to: localhost

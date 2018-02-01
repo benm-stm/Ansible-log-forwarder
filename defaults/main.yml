@@ -1,0 +1,10 @@
+---
+
+filebeat:
+  location: "{{path | default('/tmp') }}"
+
+logs:
+  - 'console'
+  - 'access'
+#proxy settings
+#proxy_env: "{{ http_proxy | default('http://221.128.58.183:3128') }}"
